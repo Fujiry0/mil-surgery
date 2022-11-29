@@ -1,0 +1,25 @@
+data:
+  data_path: ./data
+  box_features_dir: faster_rcnn_R_50_FPN_1x_set7
+  video_label_name: video.json
+  frame_label_name: frame.json
+  sample_num: 16
+
+
+training:
+  batch_size: 16
+  workers: 4
+  epochs: 50
+  opt: sgd
+  lr: 0.0001
+  wd: 0.0001
+
+
+logger:
+  use_wandb: True
+  use_tensorboard: False
+  root_log: ./logs
+  store_name: ${data.box_features_dir}_${training.opt}_${training.lr}_${training.wd}_3
+
+
+seed: 34

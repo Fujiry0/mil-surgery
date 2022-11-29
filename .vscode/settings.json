@@ -1,0 +1,23 @@
+{
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    "python.linting.lintOnSave": true,
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": true
+    },
+    "[python]": {
+        "editor.insertSpaces": true,
+        "editor.detectIndentation": true,
+        "editor.tabSize": 4
+    },
+    "python.linting.pylintEnabled": false,
+    "python.linting.flake8Enabled": true,
+    "python.linting.flake8Args": [
+        "--max-line-length=120",
+        "--max-complexity",
+        "20"
+    ],
+    "python.formatting.provider": "black",
+    "python.linting.enabled": true,
+}

@@ -9,7 +9,7 @@ class Model(nn.Module):
     def __init__(
         self,
         box_head_input_shape={"channels": 256, "height": 7, "width": 7},
-        box_head_fc_dims=[1024, 1024, 1024],
+        box_head_fc_dims=[1024, 1024],
         box_predictor_input_shape={"channels": 1024, "height": None, "width": None},
         num_classes=7,
     ):

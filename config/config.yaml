@@ -1,25 +1,25 @@
 data:
   data_path: ./data
-  box_features_dir: faster_rcnn_R_50_FPN_1x_set7
+  box_features_dir: faster_rcnn_R_50_FPN_1x_set4
   video_label_name: video.json
   frame_label_name: frame.json
-  sample_num: 16
-
+  sample_num: 32
 
 training:
   batch_size: 16
   workers: 4
-  epochs: 50
+  epochs: 100
   opt: sgd
-  lr: 0.0001
+  lr: 0.001
   wd: 0.0001
+  use_pos_weight: True
+  use_pretrain: True
 
+model:
+  box_head_fc_dims_num: 3
 
 logger:
-  use_wandb: True
-  use_tensorboard: False
   root_log: ./logs
-  store_name: ${data.box_features_dir}_${training.opt}_${training.lr}_${training.wd}_3
-
+  store_name: ${data.box_features_dir}_opt(${training.opt})_lr(${training.lr})_wd(${training.wd})_bs(${training.batch_size})_sn(${data.sample_num})_fc_dims_num(${model.box_head_fc_dims_num})
 
 seed: 34

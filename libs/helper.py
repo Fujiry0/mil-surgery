@@ -1,5 +1,4 @@
 import numpy as np
-import torch
 from sklearn.metrics import f1_score
 
 
@@ -7,11 +6,20 @@ def train(train_loader, model, criterion, optimizer, epoch):
     model.train()
     running_loss = 0.0
 
-    for _, (inputs, _, target) in enumerate(train_loader):
-        inputs = inputs.cuda()
-        target = target.cuda()
-        video_level_output, _ = model(inputs)
-        loss = criterion(video_level_output, target)
+    for _, (
+        box_features,
+        _,
+        _,
+        video_label,
+    ) in enumerate(train_loader):
+        if (
+            not box_features.any()
+        ):  # Skip when there are no faster rcnn prediction for a frame
+            continue
+        inputs = box_features.cuda()
+        target = video_label.cuda()
+        video_output, instances_output = model(inputs)
+        loss = criterion(video_output, target)
 
         optimizer.zero_grad()
         loss.backward()
@@ -30,11 +38,20 @@ def val(val_loader, model, criterion, epoch):
     model.eval()
     running_loss = 0.0
 
-    for _, (inputs, _, target) in enumerate(val_loader):
-        inputs = inputs.cuda()
-        target = target.cuda()
-        video_level_output, _ = model(inputs)
-        loss = criterion(video_level_output, target)
+    for _, (
+        box_features,
+        _,
+        _,
+        video_label,
+    ) in enumerate(val_loader):
+        if (
+            not box_features.any()
+        ):  # Skip when there are no faster rcnn prediction for a frame
+            continue
+        inputs = box_features.cuda()
+        target = video_label.cuda()
+        video_output, instances_output = model(inputs)
+        loss = criterion(video_output, target)
 
         running_loss += loss.item() * inputs.size(0)
 
@@ -45,53 +62,86 @@ def val(val_loader, model, criterion, epoch):
     return epoch_loss
 
 
-def eval(eval_loader, model, epoch):
+def eval(eval_loader, model, criterion, epoch, split="train"):
     model.eval()
-    all_preds = []
-    all_preds_mil = []
-    all_targets = []
-    all_video_target = []
-    mil_outputs = {}
-    with torch.no_grad():
-        for _, (
-            box_feature_name,
-            inputs,
-            pred_classes,
-            frame_level_label,
-            frame_level_pred_label,
-            video_level_label,
-        ) in enumerate(eval_loader):
-            if not inputs.any():
-                continue
-            inputs = inputs.cuda()
-            _, frame_level_output = model(inputs)
-            frame_level_output = frame_level_output.cpu().numpy()
-            mil_outputs[box_feature_name[0]] = {
-                "mil predictions": frame_level_output.tolist(),
-                "faster-rcnn prediction": pred_classes.numpy().tolist(),
-            }
-            frame_level_output = np.argmax(frame_level_output, axis=1)
-            frame_level_output_one_hot = np.zeros((frame_level_output.size, 7))
-            frame_level_output_one_hot[
-                np.arange(frame_level_output.size), frame_level_output
-            ] = 1
-            frame_level_output = np.any(frame_level_output_one_hot, axis=0)
-            all_targets.append(frame_level_label.numpy())
-            all_preds_mil.append(frame_level_output)
-            all_preds.append(frame_level_pred_label.cpu().numpy())
-            all_video_target.append(video_level_label.numpy())
-        all_targets = np.vstack(all_targets)
-        all_preds_mil = np.vstack(all_preds_mil)
-        all_preds = np.vstack(all_preds)
-        all_video_target = np.vstack(all_video_target)
+    running_loss = 0.0
+    all_mil_frame_preds = []
+    all_mil_frame_from_instances_preds = []
+    all_faster_rcnn_preds = []
+    all_video_label_preds = []
+    all_frame_target = []
+    # outputs = {}
+    for _, (
+        _,
+        frame_label,
+        video_label,
+        box_features,
+        faster_rcnn_pred_class,
+        _,
+    ) in enumerate(eval_loader):
+        if (
+            not box_features.any()
+        ):  # Skip when there are no faster rcnn prediction for a frame
+            continue
+        inputs = box_features.cuda()
+        target = frame_label.cuda()
+        frame_output, instances_output = model(inputs)
+        loss = criterion(frame_output, target)
+        running_loss += loss.item() * inputs.size(0)
 
-        all_preds_mil = (all_preds_mil > 0.5) * 1
-        f1_macro_mil = f1_score(all_preds_mil, all_targets, average="macro")
+        frame_output = frame_output.cpu().detach().numpy()
+        instances_output = instances_output.cpu().detach().numpy()
+        instances_output = np.argmax(instances_output, axis=1)
+        instances_output_one_hot = np.zeros((instances_output.size, 7))
+        instances_output_one_hot[np.arange(instances_output.size), instances_output] = 1
+        frame_output_from_instances = np.any(instances_output_one_hot, axis=0)
 
-        all_preds = (all_preds > 0.5) * 1
-        f1_macro = f1_score(all_preds, all_targets, average="macro")
+        all_mil_frame_preds.append(frame_output)
+        all_mil_frame_from_instances_preds.append(frame_output_from_instances)
+        all_faster_rcnn_preds.append(faster_rcnn_pred_class.numpy())
+        all_video_label_preds.append(video_label.numpy())
+        all_frame_target.append(target.cpu().numpy())
 
-        all_video_target = (all_video_target > 0.5) * 1
-        f1_macro_video_label = f1_score(all_video_target, all_targets, average="macro")
+        # outputs[box_feature_name[0]] = {
+        #         "mil predictions": instances_output.tolist(),
 
-        return f1_macro_mil, f1_macro, f1_macro_video_label, mil_outputs
+        #     }
+
+    all_mil_frame_preds = np.vstack(all_mil_frame_preds)
+    all_mil_frame_from_instances_preds = np.vstack(all_mil_frame_from_instances_preds)
+    all_faster_rcnn_preds = np.vstack(all_faster_rcnn_preds)
+    all_video_label_preds = np.vstack(all_video_label_preds)
+    all_frame_target = np.vstack(all_frame_target)
+
+    all_mil_frame_preds = (all_mil_frame_preds > 0.5) * 1
+    f1_macro_mil_frame_preds = f1_score(
+        all_mil_frame_preds, all_frame_target, average="macro"
+    )
+
+    all_mil_frame_from_instances_preds = (all_mil_frame_from_instances_preds > 0.5) * 1
+    f1_macro_mil_frame_from_instances_preds = f1_score(
+        all_mil_frame_from_instances_preds, all_frame_target, average="macro"
+    )
+
+    all_faster_rcnn_preds = (all_faster_rcnn_preds > 0.5) * 1
+    f1_macro_all_faster_rcnn_preds = f1_score(
+        all_faster_rcnn_preds, all_frame_target, average="macro"
+    )
+
+    all_video_label_preds = (all_video_label_preds > 0.5) * 1
+    f1_macro_all_video_label_preds = f1_score(
+        all_video_label_preds, all_frame_target, average="macro"
+    )
+
+    epoch_loss = running_loss / len(eval_loader.dataset)
+
+    if split == "val":
+        print("Epoch: {} Val Loss: {:.4f}".format(epoch, epoch_loss))
+
+    return (
+        epoch_loss,
+        f1_macro_mil_frame_preds,  # max instance wise output and take f1
+        f1_macro_mil_frame_from_instances_preds,  # sigmoid instance output and take any and f1
+        f1_macro_all_faster_rcnn_preds,  # take faster-rcnn output f1
+        f1_macro_all_video_label_preds,
+    )

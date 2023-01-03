@@ -1,4 +1,3 @@
-import json
 import os
 import warnings
 
@@ -12,9 +11,13 @@ from omegaconf import DictConfig
 from torch.utils.tensorboard import SummaryWriter
 
 from libs.helper import eval, train, val
-from libs.MilSurgery import MilSurgery
-from libs.MilSurgeryEval import MilSurgeryEval
-from libs.utils import save_checkpoint, set_seed
+from libs.utils import (
+    compute_pos_weight,
+    load_pretrain_model,
+    prepare_loaders,
+    save_checkpoint,
+    set_seed,
+)
 from modeling.model import Model
 
 warnings.simplefilter("ignore")
@@ -26,59 +29,20 @@ def main(cfg: DictConfig):
     set_seed(cfg.seed)
     train_root = os.path.join(cfg.data.data_path, "train")
     val_root = os.path.join(cfg.data.data_path, "val")
-    train_dataset = MilSurgery(
-        root=train_root,
-        box_features_dir=cfg.data.box_features_dir,
-        video_label_name=cfg.data.video_label_name,
-        sample_num=cfg.data.sample_num,
-    )
 
-    train_eval_dataset = MilSurgeryEval(
-        root=train_root,
-        box_features_dir=cfg.data.box_features_dir,
-        frame_label_name=cfg.data.frame_label_name,
-        video_label_name=cfg.data.video_label_name,
-    )
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=cfg.training.batch_size,
-    )
-
-    train_eval_loader = torch.utils.data.DataLoader(
-        train_eval_dataset,
-        batch_size=1,
-    )
-
-    val_dataset = MilSurgery(
-        root=val_root,
-        box_features_dir=cfg.data.box_features_dir,
-        video_label_name=cfg.data.video_label_name,
-        sample_num=cfg.data.sample_num,
-    )
-
-    val_eval_dataset = MilSurgeryEval(
-        root=val_root,
-        box_features_dir=cfg.data.box_features_dir,
-        frame_label_name=cfg.data.frame_label_name,
-        video_label_name=cfg.data.video_label_name,
-    )
-
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=cfg.training.batch_size,
-    )
-
-    val_eval_loader = torch.utils.data.DataLoader(
-        val_eval_dataset,
-        batch_size=1,
+    train_loader, val_loader, train_eval_loader, val_eval_loader = prepare_loaders(
+        train_root, val_root, cfg
     )
 
     tf_writer = SummaryWriter(
         log_dir=os.path.join(cfg.logger.root_log, cfg.logger.store_name)
     )
 
-    model = Model()
+    box_head_fc_dims = [1024] * cfg.model.box_head_fc_dims_num
+
+    model = Model(box_head_fc_dims=box_head_fc_dims)
+    if cfg.training.use_pretrain:
+        model = load_pretrain_model(model, cfg)
     model = model.cuda()
 
     if cfg.training.opt == "sgd":
@@ -92,31 +56,39 @@ def main(cfg: DictConfig):
 
     scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.training.epochs)
 
-    criterion = torch.nn.BCEWithLogitsLoss().cuda()
+    pos_weight = None
+    if cfg.training.use_pos_weight:
+        pos_weight = compute_pos_weight(
+            train_root,
+            cfg.data.video_label_name,
+        )
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight).cuda()
 
     best_f1_macro_mil = 0
-    mil_outputs = {}
+    # mil_outputs = {}
     for epoch in range(cfg.training.epochs):
         train_loss = train(train_loader, model, criterion, optimizer, epoch)
         (
-            train_f1_macro_mil,
-            train_f1_macro,
-            train_f1_macro_video_label,
-            mil_outputs["train"],
-        ) = eval(train_eval_loader, model, epoch)
+            train_eval_loss,
+            train_f1_macro_mil_frame_preds,
+            train_f1_macro_mil_frame_from_instances_preds,
+            train_f1_macro_all_faster_rcnn_preds,
+            train_f1_macro_all_video_label_preds,
+        ) = eval(train_eval_loader, model, criterion, epoch, split="train")
         model_state = model.state_dict()
 
         val_loss = val(val_loader, model, criterion, epoch)
         (
-            val_f1_macro_mil,
-            val_f1_macro,
-            val_f1_macro_video_label,
-            mil_outputs["val"],
-        ) = eval(val_eval_loader, model, epoch)
+            val_eval_loss,
+            val_f1_macro_mil_frame_preds,
+            val_f1_macro_mil_frame_from_instances_preds,
+            val_f1_macro_all_faster_rcnn_preds,
+            val_f1_macro_all_video_label_preds,
+        ) = eval(val_eval_loader, model, criterion, epoch, split="train")
 
         scheduler.step()
 
-        if best_f1_macro_mil < train_f1_macro_mil:
+        if best_f1_macro_mil < train_f1_macro_mil_frame_from_instances_preds:
             save_checkpoint(
                 cfg.logger.root_log,
                 cfg.logger.store_name,
@@ -126,27 +98,54 @@ def main(cfg: DictConfig):
                 },
             )
 
-            with open(
-                os.path.join(
-                    cfg.logger.root_log, cfg.logger.store_name, "predictions.json"
-                ),
-                "w",
-            ) as f:
-                json.dump(mil_outputs, f, indent=4)
+            # with open(
+            #     os.path.join(
+            #         cfg.logger.root_log, cfg.logger.store_name, "predictions.json"
+            #     ),
+            #     "w",
+            # ) as f:
+            #     json.dump(mil_outputs, f, indent=4)
 
-            best_f1_macro_mil = train_f1_macro_mil
+            best_f1_macro_mil = train_f1_macro_mil_frame_from_instances_preds
             print("best train f1 is updated")
 
+        # For train
         tf_writer.add_scalar("loss/train", train_loss, epoch)
-        tf_writer.add_scalar("f1 mil/train", train_f1_macro_mil, epoch)
-        tf_writer.add_scalar("f1 faster-rcnn pred/train", train_f1_macro, epoch)
-        tf_writer.add_scalar("f1 video label/train", train_f1_macro_video_label, epoch)
-        tf_writer.add_scalar("best f1 mil/train", best_f1_macro_mil, epoch)
-
         tf_writer.add_scalar("loss/val", val_loss, epoch)
-        tf_writer.add_scalar("f1 mil/val", val_f1_macro_mil, epoch)
-        tf_writer.add_scalar("f1 faster-rcnn pred/val", val_f1_macro, epoch)
-        tf_writer.add_scalar("f1 video label/val", val_f1_macro_video_label, epoch)
+
+        # For eval
+        tf_writer.add_scalar("eval (frame) loss/train", train_eval_loss, epoch)
+        tf_writer.add_scalar(
+            "f1 mil frame/train", train_f1_macro_mil_frame_preds, epoch
+        )
+        tf_writer.add_scalar(
+            "f1 mil frame from instances/train",
+            train_f1_macro_mil_frame_from_instances_preds,
+            epoch,
+        )
+        tf_writer.add_scalar(
+            "f1 frame from faster-rcnn/train",
+            train_f1_macro_all_faster_rcnn_preds,
+            epoch,
+        )
+        tf_writer.add_scalar(
+            "f1 frame from video label/train",
+            train_f1_macro_all_video_label_preds,
+            epoch,
+        )
+        tf_writer.add_scalar("eval (frame) loss/val", val_eval_loss, epoch)
+        tf_writer.add_scalar("f1 mil frame/val", val_f1_macro_mil_frame_preds, epoch)
+        tf_writer.add_scalar(
+            "f1 mil frame from instances/val",
+            val_f1_macro_mil_frame_from_instances_preds,
+            epoch,
+        )
+        tf_writer.add_scalar(
+            "f1 frame from faster-rcnn/val", val_f1_macro_all_faster_rcnn_preds, epoch
+        )
+        tf_writer.add_scalar(
+            "f1 frame from video label/val", val_f1_macro_all_video_label_preds, epoch
+        )
     tf_writer.close()
 
 

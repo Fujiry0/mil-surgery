@@ -25,38 +25,36 @@ class MilSurgeryEval(Dataset):
         return len(self.box_feature_names)
 
     def __getitem__(self, index):
+        box_feature_name = self.box_feature_names[index].split(".")[0]
         box_feature_path = os.path.join(
             self.box_features_dir, self.box_feature_names[index]
         )
         video_num = self.box_feature_names[index].split("_")[1]
         box_dict = np.load(box_feature_path, allow_pickle=True).item()
-        box_features = box_dict["box_features"][0].numpy()
-        pred_classes = box_dict["pred_instances_pred_classes"][0].numpy()
 
-        box_features = torch.from_numpy(box_features)
-        box_feature_name = self.box_feature_names[index].split(".")[0]
+        frame_label = np.array(self.frame_label_dict[box_feature_name + ".png"])
+        video_label = np.array(self.video_label_dict[video_num])
 
-        frame_level_label = torch.from_numpy(
-            np.array(self.frame_label_dict[box_feature_name + ".png"])
+        box_features = box_dict["box_features_"]
+        faster_rcnn_pred_class = box_dict["outputs_pred_classes"]
+        faster_rcnn_pred_class = np.array(
+            [1 if i in faster_rcnn_pred_class else 0 for i in range(len(frame_label))]
         )
-        frame_level_pred_label = np.array(
-            [1 if i in pred_classes else 0 for i in range(len(frame_level_label))]
-        )
+        faster_rcnn_pred_class_scores = box_dict["scores_list"]
 
-        pred_classes = torch.from_numpy(pred_classes)
-        frame_level_pred_label = torch.from_numpy(frame_level_pred_label)
-
-        video_level_label = torch.from_numpy(
-            np.array(self.video_label_dict[video_num])
-        ).type(torch.float)
+        frame_label = torch.from_numpy(frame_label).type(torch.float)
+        video_label = torch.from_numpy(video_label).type(torch.float)
+        box_features = torch.from_numpy(box_features).type(torch.float)
+        faster_rcnn_pred_class = torch.from_numpy(faster_rcnn_pred_class)
+        faster_rcnn_pred_class_scores = torch.from_numpy(faster_rcnn_pred_class_scores)
 
         return (
             box_feature_name,
+            frame_label,
+            video_label,
             box_features,
-            pred_classes,
-            frame_level_label,
-            frame_level_pred_label,
-            video_level_label,
+            faster_rcnn_pred_class,
+            faster_rcnn_pred_class_scores,
         )
 
 
